@@ -27,8 +27,7 @@ require 'gist/version' unless defined?(Gist::Version)
 module Gist
   extend self
 
-  GIST_URL   = 'https://api.github.com/gists/%s'
-  CREATE_URL = 'https://api.github.com/gists'
+  CONFIG_FILE = '~/.gist'
 
   if ENV['HTTPS_PROXY']
     PROXY = URI(ENV['HTTPS_PROXY'])
@@ -44,6 +43,45 @@ module Gist
     def self.exception(*args)
       RuntimeError.new(*args).extend(self)
     end
+  end
+
+  def url
+    @url = @url || defaults["url"] || 'https://api.github.com'
+  end
+
+  def url=(u)
+    @url = u
+  end
+
+  def api_url
+    if url == 'https://api.github.com'
+      url
+    elsif /\/$/.match(url)
+      url + 'api/v3'
+    else
+      url + '/api/v3'
+    end
+  end
+
+  def gist_url
+    if /gists$/.match(url)
+      api_url
+    else
+      api_url + '/gists'
+    end
+  end
+
+  def create_url
+    gist_url
+  end
+
+
+  def oauth_url
+    api_url + '/authorizations'
+  end
+
+  def get_url
+    gist_url + '/%s'
   end
 
   # Parses command line arguments and does what needs to be done.
@@ -140,6 +178,7 @@ module Gist
   end
   
   def login!
+    puts "Obtaining OAuth2 access_token from " + oauth_url
     print "Github username: "
     username = $stdin.gets.strip
     print "Github password: "
@@ -151,7 +190,7 @@ module Gist
                end
     puts ""
 
-    request = Net::HTTP::Post.new("/authorizations")
+    request = Net::HTTP::Post.new(oauth_url)
     request.body = JSON.dump({
       :scopes => [:gist],
       :note => "The gist gem",
@@ -160,10 +199,10 @@ module Gist
     request.content_type = "application/json"
     request.basic_auth(username, password)
     
-    response = http(URI("https://api.github.com/"), request)
+    response = http(URI(api_url), request)
 
     if Net::HTTPCreated === response
-      File.open(File.expand_path("~/.gist"), 'w') do |f|
+      File.open(File.expand_path(CONFIG_FILE), 'w') do |f|
         f.write JSON.parse(response.body)['token']
       end
       puts "Success."
@@ -206,8 +245,8 @@ module Gist
 
   # Create a gist on gist.github.com
   def write(files, private_gist = false, description = nil)
-    access_token = File.read(File.expand_path("~/.gist")) rescue nil
-    url = "/gists"
+    access_token = (File.read(File.expand_path(CONFIG_FILE)) rescue nil)
+    url = gist_url
     url << "?access_token=" << CGI.escape(access_token) if access_token.to_s != ''
 
 
@@ -216,7 +255,7 @@ module Gist
     req.content_type = 'application/json'
 
     begin
-      response = http(URI("https://api.github.com/"), req)
+      response = http(URI(api_url), req)
       if Net::HTTPSuccess === response
         JSON.parse(response.body)['html_url']
       else
@@ -228,7 +267,8 @@ module Gist
 
   # Given a gist id, returns its content.
   def read(gist_id)
-    data = JSON.parse(open(GIST_URL % gist_id).read)
+    gist_url = get_url
+    data = JSON.parse(open(gist_url % gist_id).read)
     data["files"].map{|name, content| content['content'] }.join("\n\n")
   end
 
@@ -294,7 +334,8 @@ private
     return {
       "private"   => config("gist.private"),
       "browse"    => config("gist.browse"),
-      "extension" => extension
+      "extension" => extension,
+      "url"       => config("gist.url")
     }
   end
 
